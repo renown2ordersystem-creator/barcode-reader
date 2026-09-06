@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>JANバーコードリーダー</title>
+  
+  <!-- 高速・高精度なHTML5バーコード読取ライブラリ -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #000000;
+      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+    }
+
+    /* カメラ全画面表示 */
+    #reader {
+      width: 100%;
+      height: 100dvh;
+      object-fit: cover;
+    }
+
+    #reader video {
+      width: 100% !important;
+      height: 100% !important;
+      object-fit: cover !important;
+    }
+
+    /* オーバーレイ：周囲70%黒マスク ＋ 中央横長クリア枠 */
+    .scanner-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* 横長スキャン枠 */
+    .scan-box {
+      position: relative;
+      width: 82vw;
+      max-width: 360px;
+      height: 130px; /* JANコードに合わせた横長設計 */
+      border: 2px solid #00e676;
+      border-radius: 8px;
+      background: transparent;
+      /* 周囲を70%透過の黒マスクで覆う */
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.7);
+    }
+
+    /* 四隅のコーナーガイド */
+    .scan-box::before, .scan-box::after {
+      content: '';
+      position: absolute;
+      width: 16px;
+      height: 16px;
+      border-color: #ffffff;
+      border-style: solid;
+    }
+    .scan-box::before {
+      top: -2px;
+      left: -2px;
+      border-width: 4px 0 0 4px;
+      border-top-left-radius: 8px;
+    }
+    .scan-box::after {
+      bottom: -2px;
+      right: -2px;
+      border-width: 0 4px 4px 0;
+      border-bottom-right-radius: 8px;
+    }
+
+    /* 赤いセンタースキャンライン（アニメーション） */
+    .scan-laser {
+      position: absolute;
+      top: 50%;
+      left: 5%;
+      right: 5%;
+      height: 2px;
+      background: #ff3b30;
+      box-shadow: 0 0 6px #ff3b30;
+      opacity: 0.8;
+      animation: laserPulse 1.5s ease-in-out infinite;
+    }
+
+    @keyframes laserPulse {
+      0%, 100% { opacity: 0.4; }
+      50% { opacity: 1; }
+    }
+
+    /* UI操作パーツ（上部タイトル & 閉じるボタン） */
+    .header-bar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 20;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: max(12px, env(safe-area-inset-top)) 16px 12px;
+      background: linear-gradient(to bottom, rgba(0,0,0,0.8), transparent);
+      color: #ffffff;
+    }
+
+    .header-title {
+      font-size: 17px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+    }
+
+    .close-btn {
+      padding: 6px 14px;
+      border: 0;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.25);
+      color: #ffffff;
+      font-size: 15px;
+      font-weight: 800;
+      cursor: pointer;
+      backdrop-filter: blur(4px);
+    }
+
+    /* 下部ガイダンス */
+    .footer-guide {
+      position: fixed;
+      bottom: max(24px, env(safe-area-inset-bottom));
+      left: 0;
+      right: 0;
+      z-index: 20;
+      text-align: center;
+      color: #ffffff;
+      font-size: 15px;
+      font-weight: 700;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ヘッダー -->
+  <div class="header-bar">
+    <div class="header-title">バーコードを枠内に合わせてください</div>
+    <button type="button" class="close-btn" onclick="closeScanner()">閉じる</button>
+  </div>
+
+  <!-- カメラ描画領域 -->
+  <div id="reader"></div>
+
+  <!-- 横長クリア枠 ＋ 70%マスク -->
+  <div class="scanner-overlay">
+    <div class="scan-box">
+      <div class="scan-laser"></div>
+    </div>
+  </div>
+
+  <!-- ガイドテキスト -->
+  <div class="footer-guide">JANコードを読み取ります</div>
+
+  <script>
+    let html5QrCode = null;
+    let isScanned = false;
+
+    // Web Audio API による読取ピピッ音（外部音声ファイル不要・即時再生）
+    function playBeep() {
+      try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(1800, audioCtx.currentTime); // 高めの確認音
+        gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.08); // 80ms
+      } catch (e) {}
+    }
+
+    // 読み取り成功時の処理
+    function onScanSuccess(decodedText) {
+      if (isScanned) return;
+      isScanned = true;
+
+      // 音と振動で即時フィードバック
+      playBeep();
+      if (navigator.vibrate) {
+        navigator.vibrate(50);
+      }
+
+      const payload = {
+        janCode: decodedText,
+        productNo: decodedText,
+        timestamp: Date.now()
+      };
+
+      // 1. 親ウィンドウ（window.opener）へ postMessage 送信
+      if (window.opener && !window.opener.closed) {
+        window.opener.postMessage(payload, '*');
+      }
+
+      // 2. カメラを停止してウィンドウを閉じる
+      stopCameraAndClose();
+    }
+
+    function stopCameraAndClose() {
+      if (html5QrCode) {
+        html5QrCode.stop().then(() => {
+          html5QrCode.clear();
+          window.close();
+        }).catch(() => {
+          window.close();
+        });
+      } else {
+        window.close();
+      }
+    }
+
+    function closeScanner() {
+      stopCameraAndClose();
+    }
+
+    // カメラ起動初期化
+    window.addEventListener('DOMContentLoaded', () => {
+      html5QrCode = new Html5Qrcode("reader");
+
+      const config = {
+        fps: 25, // 高速フレームレート
+        // 横長枠内に認識範囲を絞り込んでCPU負荷を激減・高速化
+        qrbox: { width: 320, height: 120 },
+        // JAN / EAN コード専用に絞り込み（誤読防止とレスポンス最大化）
+        formatsToSupport: [
+          Html5QrcodeSupportedFormats.EAN_13,
+          Html5QrcodeSupportedFormats.EAN_8,
+          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.QR_CODE
+        ]
+      };
+
+      html5QrCode.start(
+        { facingMode: "environment" }, // 背面カメラ
+        config,
+        onScanSuccess
+      ).catch(err => {
+        alert("カメラの起動に失敗しました。カメラへのアクセスを許可してください。\n" + err);
+      });
+    });
+  </script>
+</body>
+</html>
